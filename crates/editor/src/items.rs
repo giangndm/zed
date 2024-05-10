@@ -17,7 +17,9 @@ use language::{
     Point, SelectionGoal,
 };
 use multi_buffer::AnchorRangeExt;
-use project::{search::SearchQuery, FormatTrigger, Item as _, Project, ProjectPath};
+use project::{
+    search::SearchQuery, DiagnosticSummary, FormatTrigger, Item as _, Project, ProjectPath,
+};
 use rpc::proto::{self, update_view, PeerId};
 use settings::Settings;
 use workspace::item::{ItemSettings, TabContentParams};
@@ -605,7 +607,12 @@ impl Item for Editor {
                 .and_then(|buffer| buffer.read(cx).project_path(cx))
                 .and_then(|path| self.project.as_ref()?.read(cx).entry_for_path(&path, cx))
                 .map(|entry| {
-                    entry_git_aware_label_color(entry.git_status, entry.is_ignored, params.selected)
+                    entry_git_lsp_aware_label_color(
+                        entry.lsp_status,
+                        entry.git_status,
+                        entry.is_ignored,
+                        params.selected,
+                    )
                 })
                 .unwrap_or_else(|| entry_label_color(params.selected))
         } else {
@@ -1232,7 +1239,8 @@ pub fn entry_label_color(selected: bool) -> Color {
     }
 }
 
-pub fn entry_git_aware_label_color(
+pub fn entry_git_lsp_aware_label_color(
+    lsp_status: Option<DiagnosticSummary>,
     git_status: Option<GitFileStatus>,
     ignored: bool,
     selected: bool,
@@ -1240,6 +1248,14 @@ pub fn entry_git_aware_label_color(
     if ignored {
         Color::Ignored
     } else {
+        if let Some(summary) = lsp_status {
+            if summary.error_count > 0 {
+                return Color::Error;
+            } else if summary.warning_count > 0 {
+                return Color::Warning;
+            }
+        }
+
         match git_status {
             Some(GitFileStatus::Added) => Color::Created,
             Some(GitFileStatus::Modified) => Color::Modified,

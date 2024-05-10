@@ -3,7 +3,7 @@ use client::{ErrorCode, ErrorExt};
 use settings::{Settings, SettingsStore};
 
 use db::kvp::KEY_VALUE_STORE;
-use editor::{actions::Cancel, items::entry_git_aware_label_color, scroll::Autoscroll, Editor};
+use editor::{actions::Cancel, items::entry_git_lsp_aware_label_color, scroll::Autoscroll, Editor};
 use file_icons::FileIcons;
 
 use anyhow::{anyhow, Result};
@@ -17,7 +17,10 @@ use gpui::{
     UniformListScrollHandle, View, ViewContext, VisualContext as _, WeakView, WindowContext,
 };
 use menu::{Confirm, SelectFirst, SelectLast, SelectNext, SelectPrev};
-use project::{Entry, EntryKind, Fs, Project, ProjectEntryId, ProjectPath, Worktree, WorktreeId};
+use project::{
+    DiagnosticSummary, Entry, EntryKind, Fs, Project, ProjectEntryId, ProjectPath, Worktree,
+    WorktreeId,
+};
 use project_panel_settings::{ProjectPanelDockPosition, ProjectPanelSettings};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -102,6 +105,7 @@ pub struct EntryDetails {
     is_processing: bool,
     is_cut: bool,
     git_status: Option<GitFileStatus>,
+    lsp_status: Option<DiagnosticSummary>,
     is_dotenv: bool,
 }
 
@@ -1396,6 +1400,7 @@ impl ProjectPanel {
                         is_external: false,
                         is_private: false,
                         git_status: entry.git_status,
+                        lsp_status: entry.lsp_status,
                     });
                 }
                 if expanded_dir_ids.binary_search(&entry.id).is_err()
@@ -1592,6 +1597,7 @@ impl ProjectPanel {
                             .clipboard_entry
                             .map_or(false, |e| e.is_cut() && e.entry_id() == entry.id),
                         git_status: status,
+                        lsp_status: entry.lsp_status,
                         is_dotenv: entry.is_private,
                     };
 
@@ -1675,8 +1681,12 @@ impl ProjectPanel {
             .selection
             .map_or(false, |selection| selection.entry_id == entry_id);
         let width = self.size(cx);
-        let filename_text_color =
-            entry_git_aware_label_color(details.git_status, details.is_ignored, is_selected);
+        let filename_text_color = entry_git_lsp_aware_label_color(
+            details.lsp_status,
+            details.git_status,
+            details.is_ignored,
+            is_selected,
+        );
         let file_name = details.filename.clone();
         let icon = details.icon.clone();
         let depth = details.depth;
