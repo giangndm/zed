@@ -44,6 +44,7 @@ use postage::{
 use serde::Serialize;
 use settings::{Settings, SettingsLocation, SettingsStore};
 use smol::channel::{self, Sender};
+use std::ops::SubAssign;
 use std::{
     any::Any,
     cmp::{self, Ordering},
@@ -911,15 +912,28 @@ impl LocalWorktree {
             }
         }
 
-        if let Some(old_entry) = self.snapshot.entry_for_path(worktree_path.as_ref()) {
-            let mut new_entry = old_entry.clone();
-            new_entry.lsp_status = Some(new_summary.clone());
-            cx.emit(Event::UpdatedEntries(Arc::new([(
-                worktree_path.clone(),
-                new_entry.id,
-                PathChange::Updated,
-            )])));
-            self.snapshot.insert_entry(new_entry, self.fs.as_ref());
+        let mut path = worktree_path.clone();
+        loop {
+            if let Some(old_entry) = self.snapshot.entry_for_path(path.as_ref()) {
+                let mut new_entry = old_entry.clone();
+                if let Some(status) = new_entry.lsp_status.as_mut() {
+                    *status += new_summary;
+                    *status -= old_summary;
+                } else {
+                    new_entry.lsp_status = Some(new_summary.clone());
+                }
+                cx.emit(Event::UpdatedEntries(Arc::new([(
+                    path.clone(),
+                    new_entry.id,
+                    PathChange::Updated,
+                )])));
+                self.snapshot.insert_entry(new_entry, self.fs.as_ref());
+            }
+            if let Some(parent) = path.parent() {
+                path = parent.into();
+            } else {
+                break;
+            }
         }
 
         Ok(!old_summary.is_empty() || !new_summary.is_empty())
@@ -935,10 +949,22 @@ impl LocalWorktree {
 
         for (worktree_path, lsp_status) in &self.diagnostic_summaries {
             if let Some(new_summary) = lsp_status.values().next() {
-                if let Some(old_entry) = new_snapshot.entry_for_path(worktree_path.as_ref()) {
-                    let mut new_entry = old_entry.clone();
-                    new_entry.lsp_status = Some(new_summary.clone());
-                    new_snapshot.insert_entry(new_entry, self.fs.as_ref());
+                let mut path = worktree_path.clone();
+                loop {
+                    if let Some(old_entry) = new_snapshot.entry_for_path(path.as_ref()) {
+                        let mut new_entry = old_entry.clone();
+                        if let Some(status) = new_entry.lsp_status.as_mut() {
+                            *status += *new_summary;
+                        } else {
+                            new_entry.lsp_status = Some(new_summary.clone());
+                        }
+                        new_snapshot.insert_entry(new_entry, self.fs.as_ref());
+                    }
+                    if let Some(parent) = path.parent() {
+                        path = parent.into();
+                    } else {
+                        break;
+                    }
                 }
             }
         }
@@ -3450,7 +3476,6 @@ impl BackgroundScanner {
         scan_requests_rx: channel::Receiver<ScanRequest>,
         path_prefixes_to_scan_rx: channel::Receiver<Arc<Path>>,
     ) -> Self {
-        println!("new BackgroundScanner");
         Self {
             fs,
             fs_case_sensitive,
@@ -4954,5 +4979,19 @@ impl DiagnosticSummary {
             error_count: self.error_count as u32,
             warning_count: self.warning_count as u32,
         }
+    }
+}
+
+impl AddAssign for DiagnosticSummary {
+    fn add_assign(&mut self, rhs: Self) {
+        self.error_count += rhs.error_count;
+        self.warning_count += rhs.warning_count;
+    }
+}
+
+impl SubAssign for DiagnosticSummary {
+    fn sub_assign(&mut self, rhs: Self) {
+        self.error_count -= rhs.error_count;
+        self.warning_count -= rhs.warning_count;
     }
 }
