@@ -44,6 +44,7 @@ use postage::{
 use serde::Serialize;
 use settings::{Settings, SettingsLocation, SettingsStore};
 use smol::channel::{self, Sender};
+use std::ops::SubAssign;
 use std::{
     any::Any,
     cmp::{self, Ordering},
@@ -859,7 +860,7 @@ impl LocalWorktree {
         server_id: LanguageServerId,
         worktree_path: Arc<Path>,
         diagnostics: Vec<DiagnosticEntry<Unclipped<PointUtf16>>>,
-        _: &mut ModelContext<Worktree>,
+        cx: &mut ModelContext<Worktree>,
     ) -> Result<bool> {
         let summaries_by_server_id = self
             .diagnostic_summaries
@@ -911,16 +912,62 @@ impl LocalWorktree {
             }
         }
 
+        let mut path = worktree_path.clone();
+        loop {
+            if let Some(old_entry) = self.snapshot.entry_for_path(path.as_ref()) {
+                let mut new_entry = old_entry.clone();
+                if let Some(status) = new_entry.lsp_status.as_mut() {
+                    *status += new_summary;
+                    *status -= old_summary;
+                } else {
+                    new_entry.lsp_status = Some(new_summary.clone());
+                }
+                cx.emit(Event::UpdatedEntries(Arc::new([(
+                    path.clone(),
+                    new_entry.id,
+                    PathChange::Updated,
+                )])));
+                self.snapshot.insert_entry(new_entry, self.fs.as_ref());
+            }
+            if let Some(parent) = path.parent() {
+                path = parent.into();
+            } else {
+                break;
+            }
+        }
+
         Ok(!old_summary.is_empty() || !new_summary.is_empty())
     }
 
     fn set_snapshot(
         &mut self,
-        new_snapshot: LocalSnapshot,
+        mut new_snapshot: LocalSnapshot,
         entry_changes: UpdatedEntriesSet,
         cx: &mut ModelContext<Worktree>,
     ) {
         let repo_changes = self.changed_repos(&self.snapshot, &new_snapshot);
+
+        for (worktree_path, lsp_status) in &self.diagnostic_summaries {
+            if let Some(new_summary) = lsp_status.values().next() {
+                let mut path = worktree_path.clone();
+                loop {
+                    if let Some(old_entry) = new_snapshot.entry_for_path(path.as_ref()) {
+                        let mut new_entry = old_entry.clone();
+                        if let Some(status) = new_entry.lsp_status.as_mut() {
+                            *status += *new_summary;
+                        } else {
+                            new_entry.lsp_status = Some(new_summary.clone());
+                        }
+                        new_snapshot.insert_entry(new_entry, self.fs.as_ref());
+                    }
+                    if let Some(parent) = path.parent() {
+                        path = parent.into();
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
 
         self.snapshot = new_snapshot;
 
@@ -3159,6 +3206,7 @@ pub struct Entry {
     /// entries in that they are not included in searches.
     pub is_external: bool,
     pub git_status: Option<GitFileStatus>,
+    pub lsp_status: Option<DiagnosticSummary>,
     /// Whether this entry is considered to be a `.env` file.
     pub is_private: bool,
 }
@@ -3217,6 +3265,7 @@ impl Entry {
             is_external: false,
             is_private: false,
             git_status: None,
+            lsp_status: None,
         }
     }
 
@@ -4823,6 +4872,7 @@ impl<'a> TryFrom<(&'a CharBag, proto::Entry)> for Entry {
             is_ignored: entry.is_ignored,
             is_external: entry.is_external,
             git_status: git_status_from_proto(entry.git_status),
+            lsp_status: None, //TODO
             is_private: false,
         })
     }
@@ -4888,7 +4938,7 @@ impl ProjectEntryId {
     }
 }
 
-#[derive(Copy, Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct DiagnosticSummary {
     pub error_count: usize,
     pub warning_count: usize,
@@ -4929,5 +4979,19 @@ impl DiagnosticSummary {
             error_count: self.error_count as u32,
             warning_count: self.warning_count as u32,
         }
+    }
+}
+
+impl AddAssign for DiagnosticSummary {
+    fn add_assign(&mut self, rhs: Self) {
+        self.error_count += rhs.error_count;
+        self.warning_count += rhs.warning_count;
+    }
+}
+
+impl SubAssign for DiagnosticSummary {
+    fn sub_assign(&mut self, rhs: Self) {
+        self.error_count -= rhs.error_count;
+        self.warning_count -= rhs.warning_count;
     }
 }
